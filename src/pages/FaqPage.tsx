@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   HelpCircleIcon,
@@ -11,7 +11,12 @@ import {
   SearchIcon,
   MessageSquareIcon,
 } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
+import {
+  useAddFaqMutation,
+  useDeleteFaqMutation,
+  useGetFaqsQuery,
+  useUpdateFaqMutation,
+} from '../redux/api/manageWebApi';
 import { SectionTitle, Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Label, Textarea } from '../components/ui/Field';
@@ -23,62 +28,35 @@ interface FaqItem {
   answer: string;
 }
 
-const DEFAULT_FAQS: FaqItem[] = [
-  {
-    id: 'faq-1',
-    question: 'Will the recipient know who sent this resource?',
-    answer:
-      'No. Your name, phone number, and email never appear in the delivery message or headers. The resource packet arrives completely anonymously from our verified system.',
-  },
-  {
-    id: 'faq-2',
-    question: 'Is any personal data or browsing tracked when reading?',
-    answer:
-      'No. We operate on a strict zero-retention architecture. No IP addresses, phone numbers, or reading telemetry are recorded or retained.',
-  },
-  {
-    id: 'faq-3',
-    question: 'Can the recipient reply back to me?',
-    answer:
-      'No. All packet deliveries are one-directional by design to ensure complete privacy and prevent tracing.',
-  },
-  {
-    id: 'faq-4',
-    question: 'Is this service free for senders and receivers?',
-    answer:
-      'Yes. Mental Health Anonymous is completely free for everyone. It is supported through community grants and non-profit donations, never data monetization.',
-  },
-  {
-    id: 'faq-5',
-    question: 'Who writes and reviews the clinical resources?',
-    answer:
-      'Every resource packet is authored alongside licensed clinical psychologists (PsyD/MD/LCSW) and reviewed bi-annually against clinical benchmarks.',
-  },
-  {
-    id: 'faq-6',
-    question: 'What should I do if someone is in immediate danger?',
-    answer:
-      'Do not rely on educational reading in an acute emergency. Call or text 988 (Suicide & Crisis Lifeline) or contact 911 immediately.',
-  },
-];
-
 export function FaqPage() {
-  const { saveLegalDoc } = useAdminStore();
-  const [faqs, setFaqs] = useState<FaqItem[]>(() => {
-    const saved = localStorage.getItem('mha_faqs_data');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return DEFAULT_FAQS;
-      }
-    }
-    return DEFAULT_FAQS;
-  });
+  const { data: savedFaqs, isLoading, error, refetch } = useGetFaqsQuery();
+  const [addFaqRequest] = useAddFaqMutation();
+  const [updateFaqRequest] = useUpdateFaqMutation();
+  const [deleteFaqRequest] = useDeleteFaqMutation();
+  const [faqs, setFaqs] = useState<FaqItem[]>([]);
+  const [originalFaqs, setOriginalFaqs] = useState<FaqItem[]>([]);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [openPreviewIds, setOpenPreviewIds] = useState<Record<string, boolean>>({ 'faq-1': true });
+  const [openPreviewIds, setOpenPreviewIds] = useState<Record<string, boolean>>({});
   const [dirty, setDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!savedFaqs || dirty) return;
+    const mapped = savedFaqs.map((faq) => ({
+      id: faq._id,
+      question: faq.question,
+      answer: faq.answer,
+    }));
+    setFaqs(mapped);
+    setOriginalFaqs(mapped);
+    setOpenPreviewIds((current) =>
+      mapped.length && Object.keys(current).length === 0
+        ? { [mapped[0].id]: true }
+        : current,
+    );
+    setDirty(false);
+  }, [savedFaqs, dirty]);
 
   const updateFaq = (index: number, patch: Partial<FaqItem>) => {
     setFaqs((prev) => {
@@ -89,7 +67,7 @@ export function FaqPage() {
   };
 
   const addFaq = () => {
-    const newId = `faq-${Date.now()}`;
+    const newId = `new-${Date.now()}`;
     setFaqs((prev) => [
       ...prev,
       {
@@ -131,18 +109,80 @@ export function FaqPage() {
     setDirty(true);
   };
 
-  const handleSave = () => {
-    const validFaqs = faqs.filter((f) => f.question.trim().length > 0);
-    localStorage.setItem('mha_faqs_data', JSON.stringify(validFaqs));
+  const handleSave = async () => {
+    if (faqs.some((faq) => !faq.question.trim() || !faq.answer.trim())) {
+      toast.error('Each FAQ must have both a question and an answer.');
+      return;
+    }
 
-    // Also compile to HTML for store backward compatibility
-    const compiledHtml = `<h2>Frequently Asked Questions</h2>${validFaqs
-      .map((f) => `<h3>${f.question}</h3><p>${f.answer}</p>`)
-      .join('')}`;
-    saveLegalDoc('faq', compiledHtml);
+    setIsSaving(true);
+    const workingFaqs = [...faqs];
+    let workingOriginal = [...originalFaqs];
+    let savedCount = 0;
 
-    setDirty(false);
-    toast.success('Frequently Asked Questions published successfully.');
+    try {
+      const currentIds = new Set(workingFaqs.map((faq) => faq.id));
+      for (const original of [...workingOriginal]) {
+        if (!currentIds.has(original.id)) {
+          await deleteFaqRequest(original.id).unwrap();
+          workingOriginal = workingOriginal.filter((faq) => faq.id !== original.id);
+          savedCount += 1;
+        }
+      }
+
+      for (let index = 0; index < workingFaqs.length; index += 1) {
+        const faq = workingFaqs[index];
+        const body = {
+          question: faq.question.trim(),
+          answer: faq.answer.trim(),
+          order: index,
+        };
+        if (faq.id.startsWith('new-')) {
+          const created = await addFaqRequest(body).unwrap();
+          const createdFaq = { id: created._id, question: created.question, answer: created.answer };
+          workingFaqs[index] = createdFaq;
+          workingOriginal.push(createdFaq);
+          savedCount += 1;
+          setFaqs([...workingFaqs]);
+          continue;
+        }
+
+        const original = workingOriginal.find((item) => item.id === faq.id);
+        const orderChanged =
+          original !== undefined &&
+          workingOriginal.findIndex((item) => item.id === faq.id) !== index;
+        if (
+          !original ||
+          original.question !== body.question ||
+          original.answer !== body.answer ||
+          orderChanged
+        ) {
+          const updated = await updateFaqRequest({ id: faq.id, body }).unwrap();
+          const updatedFaq = { id: updated._id, question: updated.question, answer: updated.answer };
+          workingOriginal = workingOriginal.map((item) =>
+            item.id === updatedFaq.id ? updatedFaq : item,
+          );
+          savedCount += 1;
+        }
+      }
+
+      await refetch().unwrap();
+      setFaqs(workingFaqs);
+      setOriginalFaqs(workingFaqs);
+      setDirty(false);
+      toast.success('Frequently Asked Questions published successfully.');
+    } catch (saveError) {
+      setFaqs(workingFaqs);
+      setOriginalFaqs(workingOriginal);
+      setDirty(true);
+      toast.error(
+        savedCount
+          ? `${savedCount} FAQ change(s) were saved, but another failed: ${getErrorMessage(saveError)}`
+          : `Could not save FAQs: ${getErrorMessage(saveError)}`,
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const togglePreview = (id: string) => {
@@ -155,6 +195,21 @@ export function FaqPage() {
     return f.question.toLowerCase().includes(q) || f.answer.toLowerCase().includes(q);
   });
 
+  if (isLoading) {
+    return <Card className="p-6 text-sm text-subtle">Loading FAQs…</Card>;
+  }
+
+  if (error) {
+    return (
+      <Card className="space-y-4 p-6">
+        <p className="text-sm text-danger">Could not load FAQs: {getErrorMessage(error)}</p>
+        <Button variant="secondary" onClick={() => refetch()}>
+          Try Again
+        </Button>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <SectionTitle
@@ -162,13 +217,13 @@ export function FaqPage() {
         description="Add, edit, and organize questions and answers displayed in the mobile app help center and web knowledge base."
         action={
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={addFaq}>
+            <Button variant="secondary" onClick={addFaq} disabled={isSaving}>
               <PlusIcon className="h-4 w-4" />
               Add Question
             </Button>
-            <Button onClick={handleSave} disabled={!dirty}>
+            <Button onClick={() => void handleSave()} disabled={!dirty || isSaving}>
               <SaveIcon className="h-4 w-4" />
-              {dirty ? 'Save & Publish' : 'Saved'}
+              {isSaving ? 'Saving…' : dirty ? 'Save & Publish' : 'Saved'}
             </Button>
           </div>
         }
@@ -197,14 +252,16 @@ export function FaqPage() {
             {filteredFaqs.length === 0 ? (
               <Card className="p-8 text-center">
                 <MessageSquareIcon className="mx-auto h-8 w-8 text-subtle" />
-                <p className="mt-2 text-sm font-semibold text-ink">No questions found</p>
+                <p className="mt-2 text-sm font-semibold text-ink">
+                  {faqs.length ? 'No questions found' : 'No FAQs have been added'}
+                </p>
                 <p className="text-xs text-subtle mt-1">Try a different search term or add a new question.</p>
-                <Button size="sm" variant="secondary" onClick={addFaq} className="mt-4">
+                <Button size="sm" variant="secondary" onClick={addFaq} className="mt-4" disabled={isSaving}>
                   <PlusIcon className="h-3.5 w-3.5" /> Add Question
                 </Button>
               </Card>
             ) : (
-              filteredFaqs.map((item, idx) => {
+              filteredFaqs.map((item) => {
                 const originalIndex = faqs.findIndex((f) => f.id === item.id);
                 return (
                   <div
@@ -223,7 +280,7 @@ export function FaqPage() {
                         <button
                           type="button"
                           onClick={() => moveUp(originalIndex)}
-                          disabled={originalIndex === 0}
+                          disabled={originalIndex === 0 || isSaving}
                           className="rounded-lg p-1.5 text-subtle hover:bg-canvas hover:text-ink disabled:opacity-30 disabled:pointer-events-none"
                           title="Move up"
                         >
@@ -232,7 +289,7 @@ export function FaqPage() {
                         <button
                           type="button"
                           onClick={() => moveDown(originalIndex)}
-                          disabled={originalIndex === faqs.length - 1}
+                          disabled={originalIndex === faqs.length - 1 || isSaving}
                           className="rounded-lg p-1.5 text-subtle hover:bg-canvas hover:text-ink disabled:opacity-30 disabled:pointer-events-none"
                           title="Move down"
                         >
@@ -241,6 +298,7 @@ export function FaqPage() {
                         <button
                           type="button"
                           onClick={() => removeFaq(originalIndex)}
+                          disabled={isSaving}
                           className="rounded-lg p-1.5 text-subtle hover:bg-danger-bg hover:text-danger ml-1"
                           title="Delete question"
                         >
@@ -256,6 +314,7 @@ export function FaqPage() {
                           id={`q-${item.id}`}
                           value={item.question}
                           onChange={(e) => updateFaq(originalIndex, { question: e.target.value })}
+                          disabled={isSaving}
                           placeholder="e.g. Will the recipient know who sent this?"
                           className="text-xs font-medium"
                         />
@@ -268,6 +327,7 @@ export function FaqPage() {
                           rows={3}
                           value={item.answer}
                           onChange={(e) => updateFaq(originalIndex, { answer: e.target.value })}
+                          disabled={isSaving}
                           placeholder="Clear, helpful, and empathetic answer..."
                           className="text-xs leading-relaxed"
                         />
@@ -280,7 +340,7 @@ export function FaqPage() {
           </div>
 
           {filteredFaqs.length > 0 && (
-            <Button variant="secondary" onClick={addFaq} className="w-full py-2.5">
+            <Button variant="secondary" onClick={addFaq} className="w-full py-2.5" disabled={isSaving}>
               <PlusIcon className="h-4 w-4" />
               Add Another Question
             </Button>
@@ -338,4 +398,23 @@ export function FaqPage() {
       </div>
     </div>
   );
+}
+
+function getErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'message' in error.data &&
+    typeof error.data.message === 'string'
+  ) return error.data.message;
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) return error.message;
+  return 'Please try again.';
 }

@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   FileTextIcon,
@@ -8,12 +8,12 @@ import {
   Trash2Icon,
   EyeIcon,
   LayersIcon,
-  ExternalLinkIcon,
   ClockIcon,
   SparklesIcon,
 } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
-import type { IArticleResource } from '../types';
+import type { IArticleResource, ResourceRecord } from '../types';
+import { useGetTopicsQuery } from '../redux/api/topicApi';
+import { useDeleteResourceMutation, useGetResourcesQuery } from '../redux/api/resourceApi';
 import { Card, SectionTitle } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -22,14 +22,55 @@ import { Pagination, SearchInput, TableShell, Td, Th } from '../components/ui/Ta
 import { EmptyState, TableSkeleton } from '../components/ui/Skeleton';
 import { Modal } from '../components/ui/Sheet';
 import { Tooltip } from '../components/ui/Tooltip';
-import { paginate, useSimulatedLoad, useTableState } from '../hooks/useTableState';
+import { useTableState } from '../hooks/useTableState';
 import { relativeTime } from '../utils/format';
-import { cn } from '../utils/cn';
+
+function mapResource(resource: ResourceRecord): IArticleResource {
+  const topicId = typeof resource.topic === 'string' ? resource.topic : resource.topic?._id;
+  const topicName = typeof resource.topic === 'string' ? undefined : resource.topic?.name;
+  return {
+    id: resource._id,
+    topicId: topicId || '',
+    topicName,
+    title: resource.title,
+    shortDescription: resource.shortDescription,
+    contentHtml: resource.contentHtml,
+    readingTime: resource.readingTime,
+    featuredImage: resource.featuredImage,
+    status: resource.status,
+    createdAt: resource.createdAt,
+    updatedAt: resource.updatedAt,
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'message' in error.data &&
+    typeof error.data.message === 'string'
+  ) {
+    return error.data.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'error' in error.data &&
+    typeof error.data.error === 'string'
+  ) {
+    return error.data.error;
+  }
+  return 'The request failed. Please try again.';
+}
 
 export function ResourcesPage() {
   const navigate = useNavigate();
-  const { articleResources, adminTopics, deleteArticleResource } = useAdminStore();
-  const loading = useSimulatedLoad(400);
   const table = useTableState(8);
 
   const [topicFilter, setTopicFilter] = useState<string>('all');
@@ -38,35 +79,74 @@ export function ResourcesPage() {
   const [previewResource, setPreviewResource] = useState<IArticleResource | null>(null);
   const [deletingResource, setDeletingResource] = useState<IArticleResource | null>(null);
 
-  const filtered = useMemo(() => {
-    const q = table.query.trim().toLowerCase();
-    return articleResources.filter((res) => {
-      const topic = adminTopics.find((t) => t.id === res.topicId);
-      const topicName = (res.topicName || topic?.name || '').toLowerCase();
-      const title = res.title.toLowerCase();
-      const desc = (res.shortDescription || '').toLowerCase();
+  const resourceParams = {
+    page: table.page,
+    limit: table.pageSize,
+    searchTerm: table.query.trim() || undefined,
+    topic: topicFilter === 'all' ? undefined : topicFilter,
+    status: statusFilter === 'all' ? undefined : statusFilter,
+  };
+  const {
+    data: resourcesResult,
+    error,
+    isLoading,
+    isFetching,
+    refetch,
+  } = useGetResourcesQuery(resourceParams);
+  const { data: topicResult, isError: topicsError } = useGetTopicsQuery({
+    page: 1,
+    limit: 100,
+  });
+  const { data: publishedResult } = useGetResourcesQuery({
+    page: 1,
+    limit: 1,
+    status: 'published',
+  });
+  const { data: allResult } = useGetResourcesQuery({ page: 1, limit: 1 });
+  const [deleteResource, { isLoading: isDeleting }] = useDeleteResourceMutation();
+  const adminTopics = useMemo(
+    () =>
+      (topicResult?.data ?? []).map((topic) => ({
+        id: topic._id,
+        name: topic.name,
+      })),
+    [topicResult?.data],
+  );
+  const articleResources = useMemo(
+    () => (resourcesResult?.data ?? []).map(mapResource),
+    [resourcesResult?.data],
+  );
+  const publishedCount = publishedResult?.meta.total;
+  const totalCount = resourcesResult?.meta.total ?? 0;
+  const pageMeta = resourcesResult?.meta;
+  const totalPages = Math.max(1, pageMeta?.totalPages ?? 1);
+  const safePage = Math.min(table.page, totalPages);
+  const page = {
+    safePage,
+    totalPages,
+    from: pageMeta?.total ? (safePage - 1) * table.pageSize + 1 : 0,
+    to: Math.min(safePage * table.pageSize, pageMeta?.total ?? 0),
+    total: pageMeta?.total ?? 0,
+  };
 
-      const matchesQuery =
-        q.length === 0 ||
-        title.includes(q) ||
-        desc.includes(q) ||
-        topicName.includes(q);
-
-      const matchesTopic = topicFilter === 'all' || res.topicId === topicFilter;
-      const matchesStatus = statusFilter === 'all' || res.status === statusFilter;
-
-      return matchesQuery && matchesTopic && matchesStatus;
-    });
-  }, [articleResources, adminTopics, table.query, topicFilter, statusFilter]);
-
-  const page = paginate(filtered, table.page, table.pageSize);
-  const publishedCount = articleResources.filter((r) => r.status === 'published').length;
+  const currentPage = table.page;
+  const setTablePage = table.setPage;
+  const dataTotalPages = pageMeta?.totalPages;
+  useEffect(() => {
+    if (dataTotalPages !== undefined && currentPage > dataTotalPages) {
+      setTablePage(Math.max(1, dataTotalPages));
+    }
+  }, [dataTotalPages, currentPage, setTablePage]);
 
   return (
     <div className="space-y-6">
       <SectionTitle
         title="Resource & Article Management"
-        description={`${publishedCount} published articles, ${articleResources.length - publishedCount} in draft. Create, edit, and curate full-text articles and guides using the Jodit editor.`}
+        description={`${publishedCount ?? '—'} published articles, ${
+          allResult && publishedCount !== undefined
+            ? allResult.meta.total - publishedCount
+            : '—'
+        } in draft. Create, edit, and curate full-text articles and guides using the Jodit editor.`}
         action={
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={() => navigate('/topics')}>
@@ -95,7 +175,10 @@ export function ResourcesPage() {
             <div className="w-[180px]">
               <Select
                 value={topicFilter}
-                onChange={(e) => setTopicFilter(e.target.value)}
+                onChange={(e) => {
+                  setTopicFilter(e.target.value);
+                  table.setPage(1);
+                }}
                 aria-label="Filter by topic"
                 className="h-9 text-[13px]"
               >
@@ -111,7 +194,10 @@ export function ResourcesPage() {
             <div className="w-[140px]">
               <Select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as 'published' | 'draft' | 'all')}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as 'published' | 'draft' | 'all');
+                  table.setPage(1);
+                }}
                 aria-label="Filter by status"
                 className="h-9 text-[13px]"
               >
@@ -122,14 +208,26 @@ export function ResourcesPage() {
             </div>
 
             <p className="text-xs text-subtle ml-auto">
-              {filtered.length} of {articleResources.length} articles
+              {resourcesResult?.data.length ?? 0} of {totalCount} articles
+              {isFetching && !isLoading ? ' · Updating…' : ''}
             </p>
           </div>
         </div>
 
-        {loading ? (
+        {isLoading ? (
           <TableSkeleton rows={6} columns={6} />
-        ) : filtered.length === 0 ? (
+        ) : error || topicsError ? (
+          <EmptyState
+            icon={<FileTextIcon className="h-4 w-4" />}
+            title="Unable to load resources"
+            description={error ? getErrorMessage(error) : 'Unable to load topics for resource filters.'}
+            action={
+              <Button variant="secondary" size="sm" onClick={() => refetch()}>
+                Try Again
+              </Button>
+            }
+          />
+        ) : articleResources.length === 0 ? (
           <EmptyState
             icon={<FileTextIcon className="h-4 w-4" />}
             title="No resources match your filters"
@@ -155,7 +253,7 @@ export function ResourcesPage() {
                 </tr>
               </thead>
               <tbody>
-                {page.rows.map((res) => {
+                {articleResources.map((res) => {
                   const topic = adminTopics.find((t) => t.id === res.topicId);
                   const isPublished = res.status === 'published';
 
@@ -295,14 +393,19 @@ export function ResourcesPage() {
             </Button>
             <Button
               variant="danger"
-              onClick={() => {
+              onClick={async () => {
                 if (!deletingResource) return;
-                deleteArticleResource(deletingResource.id);
-                toast.success(`“${deletingResource.title}” deleted`);
-                setDeletingResource(null);
+                try {
+                  await deleteResource(deletingResource.id).unwrap();
+                  toast.success(`“${deletingResource.title}” deleted`);
+                  setDeletingResource(null);
+                } catch (deleteError) {
+                  toast.error(`Could not delete the resource: ${getErrorMessage(deleteError)}`);
+                }
               }}
+              disabled={isDeleting}
             >
-              Delete Resource
+              {isDeleting ? 'Deleting…' : 'Delete Resource'}
             </Button>
           </>
         }

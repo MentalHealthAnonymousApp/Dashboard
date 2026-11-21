@@ -1,25 +1,31 @@
-import React from 'react';
-import { MoonIcon, SunIcon, LogOutIcon, UserIcon } from 'lucide-react';
+import { MoonIcon, SunIcon, LogOutIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTheme } from '../../contexts/ThemeContext';
-import { useAdminStore } from '../../contexts/AdminStore';
+import { useGetMyProfileQuery } from '../../redux/api/profileApi';
 import { useAuth } from '../../contexts/AuthContext';
 import { Tooltip } from '../ui/Tooltip';
 
 export function Topbar({ eyebrow, title }: { eyebrow: string; title: string }) {
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
-  const { profile } = useAdminStore();
-  const { user, logout } = useAuth();
+  const { user, logout, isAuthenticated } = useAuth();
+  // Shared, cached query (also used by Settings) — renaming yourself updates this immediately.
+  const { data: profile } = useGetMyProfileQuery(undefined, { skip: !isAuthenticated });
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
-  const displayName = user?.name || profile.name;
-  const displayRole = user?.role || profile.role;
-  const displayInitials = user?.initials || profile.initials;
+  const displayName = profile?.name || user?.name || 'Admin';
+  const displayRole = user?.role || 'Super Admin';
+  const displayInitials =
+    (profile?.name || user?.name || 'A')
+      .split(/\s+/)
+      .map((part) => part[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || user?.initials;
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-4 border-b border-line bg-surface px-5 py-3.5 lg:px-8">

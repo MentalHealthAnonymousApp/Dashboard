@@ -1,25 +1,28 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
   MessageSquarePlusIcon,
   CheckCircle2Icon,
   XCircleIcon,
   AlertCircleIcon,
-  SearchIcon,
   Trash2Icon,
   EyeIcon,
-  SparklesIcon,
   MessageCircleIcon,
   ClockIcon,
-  ShieldCheckIcon,
   SendIcon,
-  ImageIcon,
-  XIcon,
-  CheckIcon,
-  RotateCcwIcon,
 } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
-import type { IAdminCommunityPost, CommunityPostApprovalStatus } from '../types';
+import type {
+  CommunityModerationResponse,
+  CommunityPostRecord,
+  IAdminCommunityPost,
+  CommunityPostApprovalStatus,
+} from '../types';
+import {
+  useDeleteCommunityPostMutation,
+  useGetCommunityModerationPostsQuery,
+  useLazyGetCommunityModerationPostsQuery,
+  useModerateCommunityPostMutation,
+} from '../redux/api/communityApi';
 import { Card, SectionTitle } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -28,7 +31,7 @@ import { Pagination, SearchInput, TableShell, Td, Th } from '../components/ui/Ta
 import { EmptyState, TableSkeleton } from '../components/ui/Skeleton';
 import { Modal } from '../components/ui/Sheet';
 import { Tooltip } from '../components/ui/Tooltip';
-import { paginate, useSimulatedLoad, useTableState } from '../hooks/useTableState';
+import { useTableState } from '../hooks/useTableState';
 import { relativeTime } from '../utils/format';
 import { cn } from '../utils/cn';
 
@@ -48,20 +51,116 @@ const FEEDBACK_PRESETS = [
   'Please update your post title to be more specific to your question.',
 ];
 
+function mapCommunityPost(post: CommunityPostRecord): IAdminCommunityPost {
+  const author =
+    typeof post.author === 'string'
+      ? post.author
+      : post.author?.fullName ||
+        [post.author?.firstName, post.author?.lastName].filter(Boolean).join(' ') ||
+        'Unknown author';
+
+  return {
+    id: post._id,
+    author,
+    title: post.title,
+    content: post.content,
+    topicTag: post.category,
+    imageUrl: post.image,
+    createdAt: post.createdAt,
+    likes: post.likesCount,
+    repliesCount: post.repliesCount,
+    status: post.status,
+    feedback: post.feedback,
+    rejectionReason: post.rejectionReason,
+    reviewedAt: post.reviewedAt,
+    reviewedBy: post.reviewedBy,
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'message' in error.data &&
+    typeof error.data.message === 'string'
+  ) {
+    return error.data.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'error' in error.data &&
+    typeof error.data.error === 'string'
+  ) {
+    return error.data.error;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return error.message;
+  }
+  return 'The request failed. Please try again.';
+}
+
+function getTotal(result: CommunityModerationResponse | undefined): number {
+  return result?.meta?.total ?? 0;
+}
+
 export function CommunityPostsPage() {
-  const {
-    communityPosts,
-    approveCommunityPost,
-    rejectCommunityPost,
-    sendFeedbackCommunityPost,
-    deleteCommunityPost,
-    approveAllPendingCommunityPosts,
-  } = useAdminStore();
-
-  const loading = useSimulatedLoad(400);
   const table = useTableState(8);
-
   const [statusFilter, setStatusFilter] = useState<CommunityPostApprovalStatus | 'all'>('all');
+  const [approvingAll, setApprovingAll] = useState(false);
+
+  const queryArgs = {
+    status: statusFilter,
+    page: table.page,
+    limit: table.pageSize,
+    searchTerm: table.query.trim() || undefined,
+  };
+  const {
+    data: postsResult,
+    error: postsError,
+    isLoading: loading,
+    isFetching,
+    refetch,
+  } = useGetCommunityModerationPostsQuery(queryArgs);
+  const { data: totalsResult, isError: totalsError } = useGetCommunityModerationPostsQuery({
+    status: 'all',
+    page: 1,
+    limit: 1,
+  });
+  const { data: pendingResult, isError: pendingError } = useGetCommunityModerationPostsQuery({
+    status: 'pending',
+    page: 1,
+    limit: 1,
+  });
+  const { data: approvedResult, isError: approvedError } = useGetCommunityModerationPostsQuery({
+    status: 'approved',
+    page: 1,
+    limit: 1,
+  });
+  const { data: needsUpdateResult, isError: needsUpdateError } = useGetCommunityModerationPostsQuery({
+    status: 'needs_update',
+    page: 1,
+    limit: 1,
+  });
+  const { data: rejectedResult, isError: rejectedError } = useGetCommunityModerationPostsQuery({
+    status: 'rejected',
+    page: 1,
+    limit: 1,
+  });
+  const [loadModerationPage] = useLazyGetCommunityModerationPostsQuery();
+  const [moderatePost, { isLoading: moderationInProgress }] = useModerateCommunityPostMutation();
+  const [deletePost, { isLoading: deletionInProgress }] = useDeleteCommunityPostMutation();
 
   // Modals state
   const [feedbackPost, setFeedbackPost] = useState<IAdminCommunityPost | null>(null);
@@ -75,39 +174,48 @@ export function CommunityPostsPage() {
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
   const [inspectPost, setInspectPost] = useState<IAdminCommunityPost | null>(null);
 
-  // Stats
-  const totalCount = communityPosts.length;
-  const pendingCount = communityPosts.filter((p) => p.status === 'pending').length;
-  const approvedCount = communityPosts.filter((p) => p.status === 'approved').length;
-  const needsUpdateCount = communityPosts.filter((p) => p.status === 'needs_update').length;
-  const rejectedCount = communityPosts.filter((p) => p.status === 'rejected').length;
+  const communityPosts = useMemo(
+    () => (postsResult?.data ?? []).map(mapCommunityPost),
+    [postsResult?.data],
+  );
+  const totalCount = totalsError || !totalsResult ? null : getTotal(totalsResult);
+  const pendingCount = pendingError || !pendingResult ? null : getTotal(pendingResult);
+  const approvedCount = approvedError || !approvedResult ? null : getTotal(approvedResult);
+  const needsUpdateCount =
+    needsUpdateError || !needsUpdateResult ? null : getTotal(needsUpdateResult);
+  const rejectedCount = rejectedError || !rejectedResult ? null : getTotal(rejectedResult);
+  const pageMeta = postsResult?.meta;
+  const totalPages = Math.max(1, pageMeta?.totalPages ?? 1);
+  const safePage = Math.min(table.page, totalPages);
+  const page = {
+    safePage,
+    totalPages,
+    from: pageMeta?.total ? (safePage - 1) * table.pageSize + 1 : 0,
+    to: Math.min(safePage * table.pageSize, pageMeta?.total ?? 0),
+    total: pageMeta?.total ?? 0,
+  };
 
-  const filtered = useMemo(() => {
-    const q = table.query.trim().toLowerCase();
-    return communityPosts.filter((p) => {
-      const title = p.title.toLowerCase();
-      const content = p.content.toLowerCase();
-      const author = p.author.toLowerCase();
-      const tag = p.topicTag.toLowerCase();
+  const currentPage = table.page;
+  const setTablePage = table.setPage;
+  const dataTotalPages = pageMeta?.totalPages;
+  useEffect(() => {
+    if (!loading && dataTotalPages !== undefined && currentPage > dataTotalPages) {
+      setTablePage(Math.max(1, dataTotalPages));
+    }
+  }, [loading, dataTotalPages, currentPage, setTablePage]);
 
-      const matchesQuery =
-        q.length === 0 ||
-        title.includes(q) ||
-        content.includes(q) ||
-        author.includes(q) ||
-        tag.includes(q);
+  const handleStatusFilterChange = (status: CommunityPostApprovalStatus | 'all') => {
+    setStatusFilter(status);
+    table.setPage(1);
+  };
 
-      const matchesStatus = statusFilter === 'all' || p.status === statusFilter;
-
-      return matchesQuery && matchesStatus;
-    });
-  }, [communityPosts, table.query, statusFilter]);
-
-  const page = paginate(filtered, table.page, table.pageSize);
-
-  const handleApprove = (post: IAdminCommunityPost) => {
-    approveCommunityPost(post.id);
-    toast.success(`Post by “${post.author}” has been approved and published to the community!`);
+  const handleApprove = async (post: IAdminCommunityPost) => {
+    try {
+      await moderatePost({ id: post.id, body: { status: 'approved' } }).unwrap();
+      toast.success(`Post by “${post.author}” has been approved and published to the community!`);
+    } catch (error) {
+      toast.error(`Could not approve the post: ${getErrorMessage(error)}`);
+    }
   };
 
   const handleOpenFeedbackModal = (post: IAdminCommunityPost) => {
@@ -115,7 +223,7 @@ export function CommunityPostsPage() {
     setFeedbackText(post.feedback || FEEDBACK_PRESETS[0]);
   };
 
-  const handleSubmitFeedback = (e: React.FormEvent) => {
+  const handleSubmitFeedback = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!feedbackPost) return;
     if (!feedbackText.trim()) {
@@ -123,10 +231,17 @@ export function CommunityPostsPage() {
       return;
     }
 
-    sendFeedbackCommunityPost(feedbackPost.id, feedbackText.trim());
-    toast.success(`Feedback sent to “${feedbackPost.author}”. Post status set to Needs Update.`);
-    setFeedbackPost(null);
-    setFeedbackText('');
+    try {
+      await moderatePost({
+        id: feedbackPost.id,
+        body: { status: 'needs_update', feedback: feedbackText.trim() },
+      }).unwrap();
+      toast.success(`Feedback sent to “${feedbackPost.author}”. Post status set to Needs Update.`);
+      setFeedbackPost(null);
+      setFeedbackText('');
+    } catch (error) {
+      toast.error(`Could not send feedback: ${getErrorMessage(error)}`);
+    }
   };
 
   const handleOpenRejectModal = (post: IAdminCommunityPost) => {
@@ -135,7 +250,7 @@ export function CommunityPostsPage() {
     setCustomRejectionText('');
   };
 
-  const handleSubmitReject = (e: React.FormEvent) => {
+  const handleSubmitReject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rejectingPost) return;
 
@@ -144,17 +259,66 @@ export function CommunityPostsPage() {
         ? customRejectionText.trim()
         : rejectionReason;
 
-    rejectCommunityPost(rejectingPost.id, reason);
-    toast.error(`Post by “${rejectingPost.author}” has been rejected.`);
-    setRejectingPost(null);
+    try {
+      await moderatePost({
+        id: rejectingPost.id,
+        body: { status: 'rejected', rejectionReason: reason },
+      }).unwrap();
+      toast.success(`Post by “${rejectingPost.author}” has been rejected.`);
+      setRejectingPost(null);
+    } catch (error) {
+      toast.error(`Could not reject the post: ${getErrorMessage(error)}`);
+    }
   };
 
-  const handleBatchApprove = () => {
-    const count = approveAllPendingCommunityPosts();
-    if (count > 0) {
-      toast.success(`Approved and published ${count} pending community posts.`);
-    } else {
-      toast.info('No pending community posts to approve.');
+  const handleBatchApprove = async () => {
+    setApprovingAll(true);
+    let approved = 0;
+    try {
+      const firstPage = await loadModerationPage({
+        status: 'pending',
+        page: 1,
+        limit: 100,
+      }).unwrap();
+      const pendingPosts = [...firstPage.data];
+      for (let pageNumber = 2; pageNumber <= firstPage.meta.totalPages; pageNumber += 1) {
+        const pageResult = await loadModerationPage({
+          status: 'pending',
+          page: pageNumber,
+          limit: 100,
+        }).unwrap();
+        pendingPosts.push(...pageResult.data);
+      }
+
+      for (const post of pendingPosts) {
+        await moderatePost({ id: post._id, body: { status: 'approved' } }).unwrap();
+        approved += 1;
+      }
+
+      if (approved > 0) {
+        toast.success(`Approved and published ${approved} pending community posts.`);
+      } else {
+        toast.info('No pending community posts to approve.');
+      }
+    } catch (error) {
+      toast.error(
+        approved > 0
+          ? `Approved ${approved} posts before an error: ${getErrorMessage(error)}`
+          : `Could not approve pending posts: ${getErrorMessage(error)}`,
+      );
+    } finally {
+      setApprovingAll(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deletingPost) return;
+    try {
+      await deletePost(deletingPost.id).unwrap();
+      toast.success(`Post by “${deletingPost.author}” deleted`);
+      setDeletingPost(null);
+    } catch (error) {
+      toast.error(`Could not delete the post: ${getErrorMessage(error)}`);
     }
   };
 
@@ -184,10 +348,10 @@ export function CommunityPostsPage() {
         title="Community Post Moderation"
         description="Review community questions and user posts. Approve appropriate content, send feedback for updates, or reject policy-violating submissions."
         action={
-          pendingCount > 0 ? (
-            <Button onClick={handleBatchApprove}>
+          (pendingCount ?? 0) > 0 ? (
+            <Button onClick={handleBatchApprove} disabled={approvingAll || moderationInProgress}>
               <CheckCircle2Icon className="h-4 w-4" />
-              Approve All Pending ({pendingCount})
+              {approvingAll ? 'Approving Pending Posts…' : `Approve All Pending (${pendingCount})`}
             </Button>
           ) : undefined
         }
@@ -197,7 +361,7 @@ export function CommunityPostsPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <button
           type="button"
-          onClick={() => setStatusFilter('all')}
+          onClick={() => handleStatusFilterChange('all')}
           className={cn(
             'flex flex-col justify-between rounded-2xl border p-4 text-left transition-all',
             statusFilter === 'all'
@@ -209,12 +373,12 @@ export function CommunityPostsPage() {
             <span className="text-xs font-medium text-subtle">Total Discussions</span>
             <MessageCircleIcon className="h-4 w-4 text-primary" />
           </div>
-          <p className="mt-3 text-2xl font-bold font-display text-ink">{totalCount}</p>
+          <p className="mt-3 text-2xl font-bold font-display text-ink">{totalCount ?? '—'}</p>
         </button>
 
         <button
           type="button"
-          onClick={() => setStatusFilter('pending')}
+          onClick={() => handleStatusFilterChange('pending')}
           className={cn(
             'flex flex-col justify-between rounded-2xl border p-4 text-left transition-all',
             statusFilter === 'pending'
@@ -229,13 +393,13 @@ export function CommunityPostsPage() {
             <ClockIcon className="h-4 w-4 text-amber-600" />
           </div>
           <p className="mt-3 text-2xl font-bold font-display text-amber-700 dark:text-amber-400">
-            {pendingCount}
+            {pendingCount ?? '—'}
           </p>
         </button>
 
         <button
           type="button"
-          onClick={() => setStatusFilter('needs_update')}
+          onClick={() => handleStatusFilterChange('needs_update')}
           className={cn(
             'flex flex-col justify-between rounded-2xl border p-4 text-left transition-all',
             statusFilter === 'needs_update'
@@ -250,13 +414,13 @@ export function CommunityPostsPage() {
             <AlertCircleIcon className="h-4 w-4 text-indigo-600" />
           </div>
           <p className="mt-3 text-2xl font-bold font-display text-indigo-700 dark:text-indigo-300">
-            {needsUpdateCount}
+            {needsUpdateCount ?? '—'}
           </p>
         </button>
 
         <button
           type="button"
-          onClick={() => setStatusFilter('approved')}
+          onClick={() => handleStatusFilterChange('approved')}
           className={cn(
             'flex flex-col justify-between rounded-2xl border p-4 text-left transition-all',
             statusFilter === 'approved'
@@ -271,7 +435,7 @@ export function CommunityPostsPage() {
             <CheckCircle2Icon className="h-4 w-4 text-emerald-600" />
           </div>
           <p className="mt-3 text-2xl font-bold font-display text-emerald-700 dark:text-emerald-400">
-            {approvedCount}
+            {approvedCount ?? '—'}
           </p>
         </button>
       </div>
@@ -282,7 +446,7 @@ export function CommunityPostsPage() {
           <SearchInput
             value={table.query}
             onChange={table.setQuery}
-            placeholder="Search post title, author, or question content…"
+            placeholder="Search post title or question content…"
             className="w-full sm:w-96"
           />
 
@@ -291,28 +455,40 @@ export function CommunityPostsPage() {
               <Select
                 value={statusFilter}
                 onChange={(e) =>
-                  setStatusFilter(e.target.value as CommunityPostApprovalStatus | 'all')
+                  handleStatusFilterChange(e.target.value as CommunityPostApprovalStatus | 'all')
                 }
                 aria-label="Filter by approval status"
                 className="h-9 text-[13px]"
               >
                 <option value="all">All Moderation Status</option>
-                <option value="pending">Pending Review ({pendingCount})</option>
-                <option value="needs_update">Feedback Sent ({needsUpdateCount})</option>
-                <option value="approved">Approved ({approvedCount})</option>
-                <option value="rejected">Rejected ({rejectedCount})</option>
+                <option value="pending">Pending Review ({pendingCount ?? '—'})</option>
+                <option value="needs_update">Feedback Sent ({needsUpdateCount ?? '—'})</option>
+                <option value="approved">Approved ({approvedCount ?? '—'})</option>
+                <option value="rejected">Rejected ({rejectedCount ?? '—'})</option>
               </Select>
             </div>
 
             <p className="text-xs text-subtle ml-auto">
-              {filtered.length} of {communityPosts.length} posts
+              {postsResult?.data.length ?? 0} of {pageMeta?.total ?? 0} posts
+              {isFetching && !loading ? ' · Updating…' : ''}
             </p>
           </div>
         </div>
 
         {loading ? (
           <TableSkeleton rows={6} columns={6} />
-        ) : filtered.length === 0 ? (
+        ) : postsError ? (
+          <EmptyState
+            icon={<MessageSquarePlusIcon className="h-4 w-4" />}
+            title="Unable to load community posts"
+            description={getErrorMessage(postsError)}
+            action={
+              <Button variant="secondary" size="sm" onClick={() => refetch()}>
+                Try Again
+              </Button>
+            }
+          />
+        ) : communityPosts.length === 0 ? (
           <EmptyState
             icon={<MessageSquarePlusIcon className="h-4 w-4" />}
             title="No community posts match your criteria"
@@ -323,7 +499,7 @@ export function CommunityPostsPage() {
                 size="sm"
                 onClick={() => {
                   table.setQuery('');
-                  setStatusFilter('all');
+                  handleStatusFilterChange('all');
                 }}
               >
                 Reset Filters
@@ -343,7 +519,7 @@ export function CommunityPostsPage() {
                 </tr>
               </thead>
               <tbody>
-                {page.rows.map((post) => {
+                {communityPosts.map((post) => {
                   return (
                     <tr
                       key={post.id}
@@ -463,7 +639,8 @@ export function CommunityPostsPage() {
                           {post.status !== 'approved' && (
                             <Tooltip label="Approve & Publish">
                               <button
-                                onClick={() => handleApprove(post)}
+                                onClick={() => void handleApprove(post)}
+                                disabled={moderationInProgress || approvingAll}
                                 aria-label={`Approve ${post.title}`}
                                 className="rounded-md p-1.5 text-emerald-600 transition-colors hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
                               >
@@ -577,9 +754,9 @@ export function CommunityPostsPage() {
               <Button type="button" variant="ghost" onClick={() => setFeedbackPost(null)}>
                 Cancel
               </Button>
-              <Button type="submit">
+              <Button type="submit" disabled={moderationInProgress}>
                 <SendIcon className="h-4 w-4" />
-                Send Feedback & Set to Needs Update
+                {moderationInProgress ? 'Sending…' : 'Send Feedback & Set to Needs Update'}
               </Button>
             </div>
           </form>
@@ -632,8 +809,8 @@ export function CommunityPostsPage() {
               <Button type="button" variant="ghost" onClick={() => setRejectingPost(null)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="danger">
-                Confirm Rejection
+              <Button type="submit" variant="danger" disabled={moderationInProgress}>
+                {moderationInProgress ? 'Rejecting…' : 'Confirm Rejection'}
               </Button>
             </div>
           </form>
@@ -691,9 +868,10 @@ export function CommunityPostsPage() {
                 {inspectPost.status !== 'approved' && (
                   <Button
                     onClick={() => {
-                      handleApprove(inspectPost);
+                      void handleApprove(inspectPost);
                       setInspectPost(null);
                     }}
+                    disabled={moderationInProgress}
                   >
                     <CheckCircle2Icon className="h-4 w-4" />
                     Approve Post
@@ -737,14 +915,10 @@ export function CommunityPostsPage() {
             </Button>
             <Button
               variant="danger"
-              onClick={() => {
-                if (!deletingPost) return;
-                deleteCommunityPost(deletingPost.id);
-                toast.success(`Post by “${deletingPost.author}” deleted`);
-                setDeletingPost(null);
-              }}
+              onClick={() => void handleDelete()}
+              disabled={deletionInProgress}
             >
-              Delete Permanently
+              {deletionInProgress ? 'Deleting…' : 'Delete Permanently'}
             </Button>
           </>
         }

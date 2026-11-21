@@ -93,6 +93,7 @@ export const baseApi = createApi({
     "Message",
     "Report",
     "Post",
+    "CommunityPost",
     "Purchase",
     "Topic",
     "Resource",

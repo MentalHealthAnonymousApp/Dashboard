@@ -1,28 +1,60 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { SaveIcon, FileTextIcon, ScaleIcon } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
 import { Card, SectionTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { JoditRichText } from '../components/ui/JoditRichText';
 import { dateTime } from '../utils/format';
+import {
+  useAddTermsConditionsMutation,
+  useGetTermsConditionsQuery,
+  useUpdateTermsConditionsMutation,
+} from '../redux/api/manageWebApi';
 
 export function TermsPage() {
-  const { legalDocs, saveLegalDoc } = useAdminStore();
-  const doc = useMemo(() => legalDocs.find((d) => d.id === 'terms') || legalDocs[0], [legalDocs]);
-  const [draftHtml, setDraftHtml] = useState<string>(doc.html);
+  const { data: doc, isLoading, error, refetch } = useGetTermsConditionsQuery();
+  const [addTermsConditions, { isLoading: isAdding }] = useAddTermsConditionsMutation();
+  const [updateTermsConditions, { isLoading: isUpdating }] =
+    useUpdateTermsConditionsMutation();
+  const [draftHtml, setDraftHtml] = useState('');
+  const isSaving = isAdding || isUpdating;
 
   useEffect(() => {
-    setDraftHtml(doc.html);
+    if (doc) setDraftHtml(doc.description);
   }, [doc]);
 
-  const dirty = draftHtml !== doc.html;
+  const dirty = draftHtml !== (doc?.description ?? '');
 
-  const publish = () => {
-    saveLegalDoc('terms', draftHtml);
-    toast.success('Terms of Service published to mobile app & web');
+  const publish = async () => {
+    try {
+      if (doc) {
+        await updateTermsConditions({ id: doc._id, description: draftHtml }).unwrap();
+      } else {
+        await addTermsConditions({ description: draftHtml }).unwrap();
+      }
+      toast.success('Terms of Service published to mobile app & web');
+    } catch (saveError) {
+      toast.error(`Could not publish the terms: ${getErrorMessage(saveError)}`);
+    }
   };
+
+  if (isLoading) {
+    return <Card className="p-6 text-sm text-subtle">Loading terms and conditions…</Card>;
+  }
+
+  if (error) {
+    return (
+      <Card className="space-y-4 p-6">
+        <p className="text-sm text-danger">
+          Could not load the terms and conditions: {getErrorMessage(error)}
+        </p>
+        <Button variant="secondary" onClick={() => refetch()}>
+          Try Again
+        </Button>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -31,9 +63,9 @@ export function TermsPage() {
         description="Defines educational boundaries, emergency limitations, and non-medical liability agreements governing all distributed resources."
         action={
           <div className="flex items-center gap-2">
-            <Button onClick={publish} disabled={!dirty}>
+            <Button onClick={() => void publish()} disabled={!dirty || isSaving || !draftHtml.trim()}>
               <SaveIcon className="h-4 w-4" />
-              {dirty ? 'Publish Changes' : 'Up to Date'}
+              {isSaving ? 'Publishing…' : dirty ? 'Publish Changes' : 'Up to Date'}
             </Button>
           </div>
         }
@@ -47,11 +79,15 @@ export function TermsPage() {
             </span>
             <div>
               <h3 className="text-sm font-semibold text-ink">Terms of Service Document</h3>
-              <p className="text-xs text-body">{doc.description}</p>
+              <p className="text-xs text-body">
+                {doc
+                  ? 'Terms displayed to users in the app and on the website.'
+                  : 'No terms are saved yet. Add the document content below to publish it.'}
+              </p>
             </div>
           </div>
           <Badge tone={dirty ? 'warning' : 'neutral'}>
-            {dirty ? 'Unpublished edits' : `Last updated ${dateTime(doc.updatedAt)}`}
+            {dirty ? 'Unpublished edits' : doc ? `Last updated ${dateTime(doc.updatedAt)}` : 'Not published'}
           </Badge>
         </div>
 
@@ -90,4 +126,23 @@ export function TermsPage() {
       </div>
     </div>
   );
+}
+
+function getErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'message' in error.data &&
+    typeof error.data.message === 'string'
+  ) return error.data.message;
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) return error.message;
+  return 'Please try again.';
 }

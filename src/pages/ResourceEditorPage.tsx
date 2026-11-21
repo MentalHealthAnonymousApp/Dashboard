@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
@@ -6,17 +6,50 @@ import {
   SaveIcon,
   EyeIcon,
   SparklesIcon,
-  ClockIcon,
   LayersIcon,
-  HelpCircleIcon,
 } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
-import type { IArticleResource } from '../types';
-import { Card, SectionTitle } from '../components/ui/Card';
+import type { ResourcePayload, ResourceRecord } from '../types';
+import { useGetTopicsQuery } from '../redux/api/topicApi';
+import {
+  useCreateResourceMutation,
+  useGetResourceQuery,
+  useUpdateResourceMutation,
+} from '../redux/api/resourceApi';
+import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Field';
 import { JoditRichText } from '../components/ui/JoditRichText';
 import { Modal } from '../components/ui/Sheet';
+
+function getErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'message' in error.data &&
+    typeof error.data.message === 'string'
+  ) {
+    return error.data.message;
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'data' in error &&
+    typeof error.data === 'object' &&
+    error.data !== null &&
+    'error' in error.data &&
+    typeof error.data.error === 'string'
+  ) {
+    return error.data.error;
+  }
+  return 'The request failed. Please try again.';
+}
+
+function getResourceTopicId(resource: ResourceRecord): string {
+  return typeof resource.topic === 'string' ? resource.topic : resource.topic?._id ?? '';
+}
 
 export function ResourceEditorPage() {
   const navigate = useNavigate();
@@ -24,20 +57,30 @@ export function ResourceEditorPage() {
   const [searchParams] = useSearchParams();
   const preselectedTopicId = searchParams.get('topicId');
 
-  const { adminTopics, articleResources, saveArticleResource, getArticleResource } = useAdminStore();
-
   const isEditing = Boolean(id);
-  const existingResource = isEditing && id ? getArticleResource(id) : undefined;
+  const {
+    data: existingResource,
+    isLoading: isLoadingResource,
+    error: resourceError,
+  } = useGetResourceQuery(id ?? '', { skip: !id });
+  const {
+    data: topicResult,
+    isLoading: isLoadingTopics,
+    error: topicsError,
+  } = useGetTopicsQuery({ page: 1, limit: 100 });
+  const adminTopics = useMemo(() => topicResult?.data ?? [], [topicResult?.data]);
+  const [createResource, { isLoading: isCreating }] = useCreateResourceMutation();
+  const [updateResource, { isLoading: isUpdating }] = useUpdateResourceMutation();
+  const isSaving = isCreating || isUpdating;
 
   // Form State
   const [topicId, setTopicId] = useState<string>(
-    existingResource?.topicId || preselectedTopicId || adminTopics[0]?.id || ''
+    preselectedTopicId || ''
   );
-  const [title, setTitle] = useState(existingResource?.title || '');
-  const [shortDescription, setShortDescription] = useState(existingResource?.shortDescription || '');
+  const [title, setTitle] = useState('');
+  const [shortDescription, setShortDescription] = useState('');
   const [contentHtml, setContentHtml] = useState(
-    existingResource?.contentHtml ||
-      `
+    `
 <h2>Overview</h2>
 <p>Write an empathetic, evidence-based introduction describing this condition and how it affects everyday life.</p>
 
@@ -51,27 +94,33 @@ export function ResourceEditorPage() {
 </ol>
       `.trim()
   );
-  const [readingTime, setReadingTime] = useState<number>(existingResource?.readingTime || 7);
-  const [status, setStatus] = useState<'published' | 'draft'>(existingResource?.status || 'published');
+  const [readingTime, setReadingTime] = useState<number>(7);
+  const [status, setStatus] = useState<'published' | 'draft'>('published');
 
   // Preview Modal State
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   useEffect(() => {
     if (existingResource) {
-      setTopicId(existingResource.topicId);
+      setTopicId(getResourceTopicId(existingResource));
       setTitle(existingResource.title);
       setShortDescription(existingResource.shortDescription || '');
       setContentHtml(existingResource.contentHtml || '');
       setReadingTime(existingResource.readingTime || 7);
-      setStatus(existingResource.status || 'published');
+      setStatus(existingResource.status);
     }
   }, [existingResource]);
 
-  const selectedTopic = adminTopics.find((t) => t.id === topicId);
+  useEffect(() => {
+    if (!isEditing && !topicId && adminTopics.length > 0) {
+      setTopicId(preselectedTopicId || adminTopics[0]._id);
+    }
+  }, [adminTopics, isEditing, preselectedTopicId, topicId]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const selectedTopic = adminTopics.find((topic) => topic._id === topicId);
+
+  const handleSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
 
     if (!topicId) {
       toast.error('Please select a topic for this resource.');
@@ -86,23 +135,55 @@ export function ResourceEditorPage() {
       return;
     }
 
-    const payload: IArticleResource = {
-      id: existingResource ? existingResource.id : `res-${Date.now()}`,
-      topicId,
-      topicName: selectedTopic?.name || 'General Topic',
+    const payload: ResourcePayload = {
+      topic: topicId,
       title: title.trim(),
       shortDescription: shortDescription.trim(),
       contentHtml,
-      readingTime: Number(readingTime) || 5,
+      readingTime: Math.max(0, Math.round(Number(readingTime) || 5)),
       status,
-      createdAt: existingResource ? existingResource.createdAt : new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     };
 
-    saveArticleResource(payload);
-    toast.success(isEditing ? 'Resource article updated successfully!' : 'New resource article published!');
-    navigate('/resources');
+    try {
+      if (isEditing && id) {
+        await updateResource({ id, body: payload }).unwrap();
+      } else {
+        await createResource(payload).unwrap();
+      }
+      toast.success(
+        isEditing ? 'Resource article updated successfully!' : 'New resource article created!',
+      );
+      navigate('/resources');
+    } catch (error) {
+      toast.error(`Could not save the resource: ${getErrorMessage(error)}`);
+    }
   };
+
+  if (isLoadingResource || isLoadingTopics) {
+    return (
+      <div className="space-y-6 pb-16">
+        <Card className="p-6 text-sm text-subtle">Loading resource details and topics…</Card>
+      </div>
+    );
+  }
+
+  if (resourceError || topicsError) {
+    const error = resourceError || topicsError;
+    return (
+      <div className="space-y-6 pb-16">
+        <Card className="space-y-4 p-6">
+          <p className="text-sm text-danger">
+            {resourceError
+              ? `Unable to load this resource: ${getErrorMessage(error)}`
+              : `Unable to load topics: ${getErrorMessage(error)}`}
+          </p>
+          <Button variant="secondary" onClick={() => navigate('/resources')}>
+            Back to Resources
+          </Button>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-16">
@@ -134,14 +215,18 @@ export function ResourceEditorPage() {
             <EyeIcon className="h-4 w-4" />
             Live Preview
           </Button>
-          <Button type="button" onClick={handleSubmit}>
+          <Button type="submit" form="resource-editor-form" disabled={isSaving}>
             <SaveIcon className="h-4 w-4" />
-            {isEditing ? 'Save Changes' : 'Publish Resource'}
+            {isSaving ? 'Saving…' : isEditing ? 'Save Changes' : 'Publish Resource'}
           </Button>
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form
+        id="resource-editor-form"
+        onSubmit={(event) => void handleSubmit(event)}
+        className="space-y-6"
+      >
         {/* Basic Configuration Details */}
         <Card className="p-6">
           <h2 className="text-sm font-semibold text-ink uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -160,10 +245,14 @@ export function ResourceEditorPage() {
                 onChange={(e) => setTopicId(e.target.value)}
                 required
                 className="mt-1.5"
+                disabled={isLoadingTopics || adminTopics.length === 0}
               >
-                {adminTopics.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
+                <option value="" disabled>
+                  {isLoadingTopics ? 'Loading topics…' : 'Select a topic'}
+                </option>
+                {adminTopics.map((topic) => (
+                  <option key={topic._id} value={topic._id}>
+                    {topic.name}
                   </option>
                 ))}
               </Select>
@@ -281,9 +370,9 @@ export function ResourceEditorPage() {
               <EyeIcon className="h-4 w-4" />
               Preview Article
             </Button>
-            <Button type="submit">
+            <Button type="submit" disabled={isSaving}>
               <SaveIcon className="h-4 w-4" />
-              {isEditing ? 'Save Changes' : 'Publish Resource'}
+              {isSaving ? 'Saving…' : isEditing ? 'Save Changes' : 'Publish Resource'}
             </Button>
           </div>
         </div>

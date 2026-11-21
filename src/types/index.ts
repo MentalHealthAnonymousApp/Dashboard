@@ -1,4 +1,5 @@
 import type { ToneKey } from './topic';
+import type { CommunityPostApprovalStatus } from './community';
 
 export type PublishStatus = 'published' | 'draft';
 
@@ -11,6 +12,13 @@ export * from './resource';
 export * from './topic';
 export * from './auth';
 export * from './api';
+export * from './community';
+export * from './resourceApi';
+export * from './manageWeb';
+export * from './message';
+export * from './purchase';
+export * from './adminUser';
+export * from './reportRecord';
 
 // Forward Topic as alias to IResource / TopicAndResource
 import type { IResource } from './resource';
@@ -197,8 +205,6 @@ export interface IArticleResource {
 // -------------------------------------------------------------
 // Community Post Moderation Types
 // -------------------------------------------------------------
-export type CommunityPostApprovalStatus = 'pending' | 'approved' | 'rejected' | 'needs_update';
-
 export interface IAdminCommunityPost {
   id: string;
   author: string;

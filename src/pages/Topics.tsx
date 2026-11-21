@@ -8,7 +8,6 @@ import {
   Trash2Icon,
   FileTextIcon,
 } from 'lucide-react';
-import { useAdminStore } from '../contexts/AdminStore';
 import { TONE_KEYS, TONE_META } from '../data/topics';
 import type { IAdminTopic, ToneKey, TopicRecord } from '../types';
 import {
@@ -17,6 +16,7 @@ import {
   useGetTopicsQuery,
   useUpdateTopicMutation,
 } from '../redux/api/topicApi';
+import { useGetResourcesQuery } from '../redux/api/resourceApi';
 import { Card, SectionTitle } from '../components/ui/Card';
 import { Badge, ToneBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -72,9 +72,18 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function TopicResourceCount({ topicId }: { topicId: string }) {
+  const { data, isLoading, isError } = useGetResourcesQuery({
+    page: 1,
+    limit: 1,
+    topic: topicId,
+  });
+
+  return <>{isLoading || isError ? '—' : data?.meta.total ?? 0}</>;
+}
+
 export function TopicsPage() {
   const navigate = useNavigate();
-  const { articleResources } = useAdminStore();
   const table = useTableState(8);
 
   const [toneFilter, setToneFilter] = useState<ToneKey | 'all'>('all');
@@ -278,10 +287,6 @@ export function TopicsPage() {
               </thead>
               <tbody>
                 {topics.map((topic) => {
-                  const attachedCount = articleResources.filter(
-                    (r) => r.topicId === topic.id || r.topicName === topic.name
-                  ).length;
-
                   return (
                     <tr
                       key={topic.id}
@@ -313,7 +318,7 @@ export function TopicsPage() {
                       <Td align="center">
                         <span className="inline-flex items-center gap-1 font-mono text-[12.5px] text-ink font-medium">
                           <FileTextIcon className="h-3.5 w-3.5 text-primary" />
-                          {attachedCount}
+                          <TopicResourceCount topicId={topic.id} />
                         </span>
                       </Td>
 
