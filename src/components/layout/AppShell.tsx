@@ -8,6 +8,7 @@ const META: Record<string, { eyebrow: string; title: string }> = {
   '/users': { eyebrow: 'Directory', title: 'User Management & Access Control' },
   '/messages': { eyebrow: 'Moderation', title: 'All Messages & Approval Queue' },
   '/reports': { eyebrow: 'Safety', title: 'Incident & Message Reports' },
+  '/support': { eyebrow: 'Support', title: 'Support Inbox' },
   '/topics': { eyebrow: 'Content', title: 'Topics & Resource Webpages' },
   '/topics/new': { eyebrow: 'Builder', title: 'Create Topic & Resource' },
   '/privacy': { eyebrow: 'Compliance', title: 'Privacy Policy & Zero-Retention Architecture' },

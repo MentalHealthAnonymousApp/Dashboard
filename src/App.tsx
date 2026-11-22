@@ -13,6 +13,7 @@ import { UserManagementPage } from './pages/UserManagementPage';
 import { AllMessagesPage } from './pages/AllMessagesPage';
 import { CommunityPostsPage } from './pages/CommunityPostsPage';
 import { ReportManagementPage } from './pages/ReportManagementPage';
+import { SupportInboxPage } from './pages/SupportInboxPage';
 import { PackagePurchasesPage } from './pages/PackagePurchasesPage';
 import { TopicsPage } from './pages/Topics';
 import { ResourcesPage } from './pages/ResourcesPage';
@@ -56,6 +57,7 @@ export function App({ initialTheme = 'light' }: AppProps) {
                   <Route path="/users" element={<UserManagementPage />} />
                   <Route path="/messages" element={<AllMessagesPage />} />
                   <Route path="/reports" element={<ReportManagementPage />} />
+                  <Route path="/support" element={<SupportInboxPage />} />
                   <Route path="/privacy" element={<PrivacyPolicyPage />} />
                   <Route path="/terms" element={<TermsPage />} />
                   <Route path="/faq" element={<FaqPage />} />

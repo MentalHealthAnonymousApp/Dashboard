@@ -99,6 +99,7 @@ export const baseApi = createApi({
     "Resource",
     "Faq",
     "Settings",
+    "Support",
   ],
   endpoints: () => ({}),
 });

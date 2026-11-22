@@ -249,4 +249,4 @@ export interface IPackagePurchase {
   consultationNotes?: string;
   recipientContact?: string;
   topicName?: string;
-}
+}export * from './support';
